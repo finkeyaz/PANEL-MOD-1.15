@@ -1,0 +1,1797 @@
+-- =====================================================================
+--  PANEL MOD — VERSION 5.15 (105.15)  —  UN SEUL SCRIPT COMPLET
+--  LocalScript à placer dans StarterGui
+--
+--  NOUVEAUTÉS :
+--   ✔ Plus aucune fonction de triche (onglet Joueur supprimé)
+--   ✔ Nouvel onglet SHADERS : 5 shaders (Fluo, Mouvement, Cinéma,
+--     Noir & Blanc, Rêve) + intensité + animation
+--   ✔ Animation de mise à jour refaite (fenêtre sombre, flèche qui
+--     s'envoie, téléchargement en boucle, ondes, étapes, confettis)
+--   ✔ Paramètres enrichis (touche, animations, vitesse, taille, opacité,
+--     notifications, couleur d'accent, recentrer, réinitialiser)
+-- =====================================================================
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local lighting = game:GetService("Lighting")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local Camera = workspace.CurrentCamera
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	Camera = workspace.CurrentCamera
+end)
+
+----------------------------------------------------
+-- CONSTANTES & OUTILS GÉNÉRAUX
+----------------------------------------------------
+local VERSION = "5.15"
+local EF, ES, ED = Enum.Font, Enum.EasingStyle, Enum.EasingDirection
+
+local WHITE = Color3.fromRGB(255, 255, 255)
+local TXT = Color3.fromRGB(45, 55, 72)
+local SUB = Color3.fromRGB(100, 110, 125)
+local LIGHT = Color3.fromRGB(230, 235, 245)
+local GREEN = Color3.fromRGB(46, 204, 113)
+local RED = Color3.fromRGB(220, 70, 70)
+local TRACK = Color3.fromRGB(210, 215, 225)
+local DEFAULT_ACCENT = Color3.fromRGB(53, 120, 229)
+
+local animationsOn = true
+local animSpeed = 1
+local notifOn = true
+local accentColor = DEFAULT_ACCENT
+local accentRefs = {}
+local orders = {}
+local W = {} -- widgets / fonctions partagées entre onglets
+
+local function tw(obj, t, props, style, dir)
+	local d = animationsOn and (t / animSpeed) or 0
+	local info = TweenInfo.new(d, style or ES.Quad, dir or ED.Out)
+	local tween = TweenService:Create(obj, info, props)
+	tween:Play()
+	return tween
+end
+
+local function new(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props) do
+		o[k] = v
+	end
+	if parent then
+		o.Parent = parent
+	end
+	return o
+end
+
+local function corner(obj, r)
+	return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, obj)
+end
+
+local function round(obj)
+	return new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, obj)
+end
+
+local function ord(p)
+	orders[p] = (orders[p] or 0) + 1
+	return orders[p]
+end
+
+local function accent(obj, prop)
+	table.insert(accentRefs, { obj, prop })
+	obj[prop] = accentColor
+	return obj
+end
+
+local function setAccent(c)
+	accentColor = c
+	for _, r in ipairs(accentRefs) do
+		if r[1] and r[1].Parent then
+			r[1][r[2]] = c
+		end
+	end
+	if W.refreshTabs then W.refreshTabs() end
+	if W.refreshShaders then W.refreshShaders() end
+end
+
+local function hover(btn, blocked)
+	btn.AutoButtonColor = false
+	btn.MouseEnter:Connect(function()
+		if blocked and blocked() then return end
+		tw(btn, 0.12, { BackgroundTransparency = 0.15 })
+	end)
+	btn.MouseLeave:Connect(function()
+		if blocked and blocked() then return end
+		tw(btn, 0.12, { BackgroundTransparency = 0 })
+	end)
+	btn.MouseButton1Down:Connect(function()
+		if blocked and blocked() then return end
+		tw(btn, 0.05, { BackgroundTransparency = 0.4 })
+	end)
+	btn.MouseButton1Up:Connect(function()
+		if blocked and blocked() then return end
+		tw(btn, 0.1, { BackgroundTransparency = 0.15 })
+	end)
+end
+
+----------------------------------------------------
+-- SYSTÈME DE RÉSOLUTION (STRETCH)
+----------------------------------------------------
+local currentStretchY = 1
+local stretchConnection = nil -- conservé pour compatibilité avec le reste du script
+local function applyResolution(ratioY)
+	-- Roblox ne permet pas à un LocalScript de changer le vrai ratio de rendu.
+	-- Éviter de multiplier Camera.CFrame par une matrice d'échelle à chaque frame :
+	-- cela déforme la transformation de la caméra au lieu de changer la résolution.
+	currentStretchY = math.clamp(tonumber(ratioY) or 1, 0.1, 1)
+	if stretchConnection then
+		stretchConnection:Disconnect()
+		stretchConnection = nil
+	end
+end
+
+----------------------------------------------------
+-- GUIs (priorités d'affichage)
+----------------------------------------------------
+local screenGui = new("ScreenGui", {
+	Name = "MainGui", ResetOnSpawn = false, DisplayOrder = 999999,
+}, playerGui)
+
+local panelGui = new("ScreenGui", {
+	Name = "PanelGui", ResetOnSpawn = false, DisplayOrder = 1000001,
+}, playerGui)
+
+local crossGui = new("ScreenGui", {
+	Name = "CrossGui", ResetOnSpawn = false, DisplayOrder = 1000002, IgnoreGuiInset = true,
+}, playerGui)
+
+----------------------------------------------------
+-- ÉTAT GLOBAL
+----------------------------------------------------
+local panelOpen = false
+local panelUnlocked = false
+local menuOpen = false
+local userScale = 1
+local panelBaseT = 0
+
+local shapesList = { "+", "●", "⭕", "✛", "✕" }
+local shapeNames = { "Croix (+)", "Point (●)", "Cercle (⭕)", "Croix fine (✛)", "Croix (✕)" }
+local C = {
+	enabled = false,
+	mode = "Center",
+	shape = 1,
+	size = 18,
+	color = Color3.fromRGB(0, 255, 128),
+	rgb = false,
+	opacity = 100,
+	outline = false,
+}
+
+local function newCrosshairLabel(name)
+	return new("TextLabel", {
+		Name = name,
+		Size = UDim2.new(0, 50, 0, 50),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundTransparency = 1,
+		Text = "+",
+		TextColor3 = C.color,
+		TextSize = C.size,
+		Font = EF.GothamBold,
+		Visible = false,
+		ZIndex = 9999,
+		TextStrokeColor3 = Color3.new(0, 0, 0),
+		TextStrokeTransparency = 1,
+	}, crossGui)
+end
+local centerCross = newCrosshairLabel("CrossCenter")
+local mouseCross = newCrosshairLabel("CrossMouse")
+
+----------------------------------------------------
+-- GESTION DU CURSEUR
+----------------------------------------------------
+local function updateCursorState()
+	if menuOpen or not C.enabled then
+		UserInputService.MouseIconEnabled = true
+		return
+	end
+	if C.mode == "Mouse" or C.mode == "Both" then
+		UserInputService.MouseIconEnabled = false
+	else
+		UserInputService.MouseIconEnabled = panelOpen
+	end
+end
+
+GuiService.MenuOpened:Connect(function()
+	menuOpen = true
+	UserInputService.MouseIconEnabled = true
+	centerCross.Visible = false
+	mouseCross.Visible = false
+end)
+GuiService.MenuClosed:Connect(function()
+	menuOpen = false
+	updateCursorState()
+end)
+
+----------------------------------------------------
+-- FPS / PING (overlay)
+----------------------------------------------------
+local fpsLabel = new("TextLabel", {
+	Size = UDim2.new(0, 190, 0, 22),
+	Position = UDim2.new(0, 10, 0, 6),
+	BackgroundColor3 = Color3.fromRGB(20, 24, 32),
+	BackgroundTransparency = 0.3,
+	TextColor3 = WHITE,
+	TextSize = 12,
+	Font = EF.GothamBold,
+	Text = "FPS: --",
+	Visible = false,
+}, panelGui)
+corner(fpsLabel, 6)
+
+local fpsFrames, fpsAcc = 0, 0
+
+----------------------------------------------------
+-- BOUCLE RENDU : CROSSHAIR + FPS
+----------------------------------------------------
+RunService.RenderStepped:Connect(function(dt)
+	if fpsLabel.Visible then
+		fpsFrames += 1
+		fpsAcc += dt
+		if fpsAcc >= 0.5 then
+			local fps = math.floor(fpsFrames / fpsAcc + 0.5)
+			local ping = 0
+			pcall(function()
+				ping = math.floor(player:GetNetworkPing() * 1000 + 0.5)
+			end)
+			fpsLabel.Text = "FPS: " .. fps .. "  |  Ping: " .. ping .. " ms"
+			fpsFrames, fpsAcc = 0, 0
+		end
+	end
+
+	if C.enabled and not menuOpen then
+		local desired
+		if C.mode == "Mouse" or C.mode == "Both" then
+			desired = false
+		else
+			desired = panelOpen
+		end
+		if UserInputService.MouseIconEnabled ~= desired then
+			UserInputService.MouseIconEnabled = desired
+		end
+	end
+
+	local showCenter = C.enabled and not menuOpen and (C.mode == "Center" or C.mode == "Both")
+	local showMouse = C.enabled and not menuOpen and (C.mode == "Mouse" or C.mode == "Both")
+
+	local color = C.rgb and Color3.fromHSV((os.clock() % 4) / 4, 1, 1) or C.color
+	local boxSize = math.max(50, C.size * 3)
+	local transp = 1 - C.opacity / 100
+	local strokeT = C.outline and transp or 1
+
+	local function style(label)
+		label.Text = shapesList[C.shape]
+		label.TextSize = C.size
+		label.Size = UDim2.new(0, boxSize, 0, boxSize)
+		label.TextColor3 = color
+		label.TextTransparency = transp
+		label.TextStrokeTransparency = strokeT
+	end
+
+	centerCross.Visible = showCenter
+	if showCenter then
+		style(centerCross)
+		local cam = workspace.CurrentCamera
+		if cam then
+			local vs = cam.ViewportSize
+			centerCross.Position = UDim2.new(0, vs.X / 2, 0, vs.Y / 2)
+		end
+	end
+
+	mouseCross.Visible = showMouse
+	if showMouse then
+		style(mouseCross)
+		local loc = UserInputService:GetMouseLocation()
+		mouseCross.Position = UDim2.new(0, loc.X, 0, loc.Y)
+	end
+end)
+
+----------------------------------------------------
+-- NOTIFICATIONS (TOASTS)
+----------------------------------------------------
+local toastFrame = new("Frame", {
+	Size = UDim2.new(0, 320, 0, 38),
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, 60),
+	BackgroundColor3 = Color3.fromRGB(35, 40, 52),
+	Visible = false,
+	ZIndex = 50,
+}, panelGui)
+corner(toastFrame, 10)
+local toastLabel = new("TextLabel", {
+	Size = UDim2.new(1, -20, 1, 0),
+	Position = UDim2.new(0, 10, 0, 0),
+	BackgroundTransparency = 1,
+	TextColor3 = WHITE,
+	TextSize = 13,
+	Font = EF.GothamBold,
+	Text = "",
+	ZIndex = 51,
+}, toastFrame)
+
+local toastToken = 0
+local function toast(msg)
+	if not notifOn then return end
+	toastToken += 1
+	local my = toastToken
+	toastLabel.Text = msg
+	toastFrame.Visible = true
+	toastFrame.Position = UDim2.new(0.5, 0, 1, 60)
+	tw(toastFrame, 0.35, { Position = UDim2.new(0.5, 0, 1, -30) }, ES.Back, ED.Out)
+	task.delay(2.4, function()
+		if my ~= toastToken then return end
+		local t = tw(toastFrame, 0.3, { Position = UDim2.new(0.5, 0, 1, 60) }, ES.Quad, ED.In)
+		t.Completed:Wait()
+		if my == toastToken then
+			toastFrame.Visible = false
+		end
+	end)
+end
+
+----------------------------------------------------
+-- DRAG
+----------------------------------------------------
+local function makeDraggable(handle, frame)
+	local dragging, dragStart, startPos = false, nil, nil
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local d = input.Position - dragStart
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+----------------------------------------------------
+-- FABRIQUE DE WIDGETS
+----------------------------------------------------
+local function makePage(parent)
+	local page = new("ScrollingFrame", {
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 4,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ClipsDescendants = true,
+	}, parent)
+	new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, page)
+	new("UIPadding", {
+		PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 18),
+		PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 14),
+	}, page)
+	return page
+end
+
+local function makeLabel(page, text, size, bold, color, h)
+	return new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, h or 20),
+		BackgroundTransparency = 1,
+		Text = text,
+		TextColor3 = color or SUB,
+		TextSize = size or 12,
+		Font = bold and EF.GothamBold or EF.GothamMedium,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		TextWrapped = true,
+		LayoutOrder = ord(page),
+	}, page)
+end
+
+local function makeHeading(page, text)
+	return makeLabel(page, text, 16, true, TXT, 26)
+end
+
+local function makeButton(page, text, cb, kind, h)
+	local b = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, h or 34),
+		BackgroundColor3 = LIGHT,
+		Text = text,
+		TextColor3 = TXT,
+		TextSize = 12,
+		Font = EF.GothamBold,
+		LayoutOrder = ord(page),
+	}, page)
+	if kind == "accent" then
+		accent(b, "BackgroundColor3")
+		b.TextColor3 = WHITE
+	elseif kind == "red" then
+		b.BackgroundColor3 = RED
+		b.TextColor3 = WHITE
+	end
+	corner(b, 8)
+	hover(b)
+	if cb then
+		b.MouseButton1Click:Connect(function()
+			cb(b)
+		end)
+	end
+	return b
+end
+
+local function makeRow(page, defs, h)
+	local row = new("Frame", {
+		Size = UDim2.new(1, 0, 0, h or 32),
+		BackgroundTransparency = 1,
+		LayoutOrder = ord(page),
+	}, page)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, row)
+	local n = #defs
+	local btns = {}
+	for i, d in ipairs(defs) do
+		local b = new("TextButton", {
+			Size = UDim2.new(1 / n, -6 * (n - 1) / n, 1, 0),
+			BackgroundColor3 = LIGHT,
+			Text = d[1],
+			TextColor3 = TXT,
+			TextSize = 11,
+			Font = EF.GothamBold,
+			LayoutOrder = i,
+		}, row)
+		corner(b, 6)
+		hover(b)
+		b.MouseButton1Click:Connect(function()
+			d[2](b, i)
+		end)
+		btns[i] = b
+	end
+	return btns
+end
+
+local function makeToggle(page, text, default, cb)
+	local state = false
+	local b = makeButton(page, "", nil, nil, 34)
+	local obj = { button = b }
+	local function refresh()
+		b.BackgroundColor3 = state and GREEN or RED
+		b.TextColor3 = WHITE
+		b.Text = text .. " : " .. (state and "ON" or "OFF")
+	end
+	function obj.set(v, silent)
+		state = v and true or false
+		refresh()
+		if not silent and cb then
+			cb(state)
+		end
+	end
+	function obj.get()
+		return state
+	end
+	b.MouseButton1Click:Connect(function()
+		obj.set(not state)
+	end)
+	obj.set(default, true)
+	return obj
+end
+
+local activeSlider = nil
+local function makeSlider(page, text, min, max, default, step, cb, fmt)
+	local holder = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 46),
+		BackgroundTransparency = 1,
+		LayoutOrder = ord(page),
+	}, page)
+	local lbl = new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 18),
+		BackgroundTransparency = 1,
+		TextColor3 = SUB,
+		TextSize = 12,
+		Font = EF.GothamMedium,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, holder)
+	local bg = new("Frame", {
+		Size = UDim2.new(1, -10, 0, 10),
+		Position = UDim2.new(0, 5, 0, 30),
+		BackgroundColor3 = TRACK,
+		BorderSizePixel = 0,
+	}, holder)
+	corner(bg, 5)
+	local fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BorderSizePixel = 0 }, bg)
+	accent(fill, "BackgroundColor3")
+	corner(fill, 5)
+	local knob = new("Frame", {
+		Size = UDim2.new(0, 18, 0, 18),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		BackgroundColor3 = WHITE,
+	}, bg)
+	corner(knob, 9)
+	local ks = new("UIStroke", { Thickness = 2 }, knob)
+	accent(ks, "Color")
+	local hit = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 28),
+		Position = UDim2.new(0, 0, 0, 18),
+		BackgroundTransparency = 1,
+		Text = "",
+		ZIndex = 5,
+	}, holder)
+
+	local value = default
+	local obj = {}
+	local function render()
+		local a = (value - min) / (max - min)
+		fill.Size = UDim2.new(a, 0, 1, 0)
+		knob.Position = UDim2.new(a, 0, 0.5, 0)
+		lbl.Text = text .. " : " .. (fmt and fmt(value) or tostring(value))
+	end
+	function obj.set(v, silent)
+		v = math.clamp(v, min, max)
+		v = math.floor(v / step + 0.5) * step
+		value = tonumber(string.format("%.4f", v))
+		render()
+		if not silent and cb then
+			cb(value)
+		end
+	end
+	function obj.get()
+		return value
+	end
+	function obj.fromX(x)
+		local a = math.clamp((x - bg.AbsolutePosition.X) / math.max(bg.AbsoluteSize.X, 1), 0, 1)
+		obj.set(min + a * (max - min))
+	end
+	hit.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			activeSlider = obj
+			obj.fromX(input.Position.X)
+		end
+	end)
+	obj.set(default, true)
+	return obj
+end
+
+UserInputService.InputChanged:Connect(function(input)
+	if activeSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		activeSlider.fromX(input.Position.X)
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		activeSlider = nil
+	end
+end)
+
+local function makeColorGrid(page, colors, onPick)
+	local grid = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, LayoutOrder = ord(page),
+	}, page)
+	new("UIGridLayout", {
+		CellSize = UDim2.new(0, 36, 0, 26), CellPadding = UDim2.new(0, 6, 0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, grid)
+	for idx, col in ipairs(colors) do
+		local b = new("TextButton", { BackgroundColor3 = col, Text = "", LayoutOrder = idx }, grid)
+		corner(b, 6)
+		hover(b)
+		b.MouseButton1Click:Connect(function()
+			onPick(col)
+		end)
+	end
+	-- hauteur suffisante pour plusieurs lignes
+	local perRow = 8
+	local rows = math.ceil(#colors / perRow)
+	grid.Size = UDim2.new(1, 0, 0, rows * 30)
+	return grid
+end
+
+----------------------------------------------------
+-- 1. FENÊTRE DE MISE À JOUR (refaite)
+----------------------------------------------------
+local isUpdating = false
+local ICON_Y = 112
+
+local updateWindow = new("CanvasGroup", {
+	Name = "UpdateWindow",
+	Size = UDim2.new(0, 440, 0, 320),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 30),
+	BackgroundColor3 = Color3.fromRGB(22, 26, 38),
+	GroupTransparency = 1,
+}, screenGui)
+corner(updateWindow, 14)
+local updateScale = new("UIScale", { Scale = 0.85 }, updateWindow)
+
+local header = new("Frame", { Size = UDim2.new(1, 0, 0, 48), BorderSizePixel = 0 }, updateWindow)
+accent(header, "BackgroundColor3")
+new("TextLabel", {
+	Size = UDim2.new(0.6, 0, 1, 0), Position = UDim2.new(0, 18, 0, 0),
+	BackgroundTransparency = 1, Text = "PANEL MOD", TextColor3 = WHITE,
+	TextSize = 16, Font = EF.GothamBold, TextXAlignment = Enum.TextXAlignment.Left,
+}, header)
+local badge = new("TextLabel", {
+	Size = UDim2.new(0, 64, 0, 24), AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -16, 0.5, 0), BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+	BackgroundTransparency = 0.8, Text = "v" .. VERSION, TextColor3 = WHITE,
+	TextSize = 13, Font = EF.GothamBold,
+}, header)
+round(badge)
+makeDraggable(header, updateWindow)
+
+local iconButton = new("TextButton", {
+	Name = "IconButton",
+	Size = UDim2.new(0, 76, 0, 76),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0, ICON_Y),
+	BackgroundColor3 = Color3.fromRGB(34, 40, 58),
+	Text = "",
+	AutoButtonColor = false,
+	ZIndex = 3,
+	ClipsDescendants = true,
+}, updateWindow)
+round(iconButton)
+local iconStroke = new("UIStroke", { Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, iconButton)
+accent(iconStroke, "Color")
+local arrow = new("TextLabel", {
+	Size = UDim2.new(1, 0, 1, 0), AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundTransparency = 1,
+	Text = "↓", TextSize = 38, Font = EF.GothamBold, ZIndex = 4,
+}, iconButton)
+accent(arrow, "TextColor3")
+
+new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 30), Position = UDim2.new(0, 0, 0, 160),
+	BackgroundTransparency = 1, Text = "MISE À JOUR " .. VERSION, TextColor3 = WHITE,
+	TextSize = 22, Font = EF.GothamBold,
+}, updateWindow)
+local subtitleLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 18), Position = UDim2.new(0, 0, 0, 190),
+	BackgroundTransparency = 1, Text = "Cliquez sur la flèche pour initialiser le panel",
+	TextColor3 = Color3.fromRGB(140, 150, 175), TextSize = 12, Font = EF.GothamMedium,
+}, updateWindow)
+
+local progressBg = new("Frame", {
+	Size = UDim2.new(0, 360, 0, 10), Position = UDim2.new(0.5, -180, 0, 224),
+	BackgroundColor3 = Color3.fromRGB(48, 55, 76), BorderSizePixel = 0,
+}, updateWindow)
+round(progressBg)
+local progressBar = new("Frame", {
+	Size = UDim2.new(0, 0, 1, 0), BorderSizePixel = 0, ClipsDescendants = true,
+}, progressBg)
+accent(progressBar, "BackgroundColor3")
+round(progressBar)
+local shine = new("Frame", {
+	Size = UDim2.new(0, 60, 1, 0), Position = UDim2.new(0, -60, 0, 0),
+	BackgroundColor3 = WHITE, BackgroundTransparency = 0.7, BorderSizePixel = 0,
+}, progressBar)
+local percentLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 20), Position = UDim2.new(0, 0, 0, 240),
+	BackgroundTransparency = 1, Text = "0%", TextColor3 = WHITE,
+	TextSize = 14, Font = EF.GothamBold,
+}, updateWindow)
+
+local stepNames = { "Préparation", "Chargement", "Activation", "Finalisation" }
+local stepThresholds = { 0.2, 0.5, 0.8, 1 }
+local stepLabels = {}
+local stepsRow = new("Frame", {
+	Size = UDim2.new(0, 400, 0, 22), Position = UDim2.new(0.5, -200, 0, 272),
+	BackgroundTransparency = 1,
+}, updateWindow)
+for i, name in ipairs(stepNames) do
+	stepLabels[i] = new("TextLabel", {
+		Size = UDim2.new(0.25, 0, 1, 0), Position = UDim2.new((i - 1) * 0.25, 0, 0, 0),
+		BackgroundTransparency = 1, Text = "○ " .. name,
+		TextColor3 = Color3.fromRGB(110, 120, 145), TextSize = 11, Font = EF.GothamMedium,
+	}, stepsRow)
+end
+
+local function setSteps(p)
+	local currentFound = false
+	for i, l in ipairs(stepLabels) do
+		if p >= stepThresholds[i] then
+			l.Text = "✓ " .. stepNames[i]
+			l.TextColor3 = GREEN
+		elseif not currentFound then
+			currentFound = true
+			l.Text = "● " .. stepNames[i]
+			l.TextColor3 = WHITE
+		else
+			l.Text = "○ " .. stepNames[i]
+			l.TextColor3 = Color3.fromRGB(110, 120, 145)
+		end
+	end
+end
+
+----------------------------------------------------
+-- 2. FENÊTRE PANEL MOD
+----------------------------------------------------
+local panelWindow = new("CanvasGroup", {
+	Name = "PanelModWindow",
+	Size = UDim2.new(0, 560, 0, 420),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	BackgroundColor3 = Color3.fromRGB(245, 247, 250),
+	GroupTransparency = 1,
+	Visible = false,
+}, panelGui)
+corner(panelWindow, 12)
+local panelScale = new("UIScale", { Scale = 1 }, panelWindow)
+
+local panelTopBar = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 40), BorderSizePixel = 0,
+}, panelWindow)
+accent(panelTopBar, "BackgroundColor3")
+new("TextLabel", {
+	Size = UDim2.new(1, -110, 1, 0), Position = UDim2.new(0, 15, 0, 0),
+	BackgroundTransparency = 1, Text = "PANEL MOD  v" .. VERSION,
+	TextColor3 = WHITE, TextSize = 18, Font = EF.GothamBold,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, panelTopBar)
+makeDraggable(panelTopBar, panelWindow)
+
+local closeBtn = new("TextButton", {
+	Size = UDim2.new(0, 32, 0, 32), Position = UDim2.new(1, -76, 0, 4),
+	BackgroundColor3 = Color3.fromRGB(200, 60, 60), Text = "✕",
+	TextColor3 = WHITE, TextSize = 14, Font = EF.GothamBold, ZIndex = 10,
+}, panelTopBar)
+corner(closeBtn, 8)
+hover(closeBtn)
+
+local settingsBtn = new("TextButton", {
+	Size = UDim2.new(0, 32, 0, 32), Position = UDim2.new(1, -40, 0, 4),
+	BackgroundColor3 = Color3.fromRGB(40, 100, 200), Text = "⚙️",
+	TextSize = 16, ZIndex = 10,
+}, panelTopBar)
+corner(settingsBtn, 8)
+hover(settingsBtn)
+
+local sideBar = new("Frame", {
+	Size = UDim2.new(0, 140, 1, -40), Position = UDim2.new(0, 0, 0, 40),
+	BackgroundColor3 = Color3.fromRGB(230, 235, 245), BorderSizePixel = 0,
+}, panelWindow)
+local contentArea = new("Frame", {
+	Size = UDim2.new(1, -140, 1, -40), Position = UDim2.new(0, 140, 0, 40),
+	BackgroundTransparency = 1, ClipsDescendants = true,
+}, panelWindow)
+new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 20), Position = UDim2.new(0, 0, 1, -24),
+	BackgroundTransparency = 1, Text = "v" .. VERSION .. "  (105.15)",
+	TextColor3 = SUB, TextSize = 10, Font = EF.GothamMedium,
+}, sideBar)
+
+local settingsPopup -- défini plus bas
+
+local function openPanel()
+	if panelOpen then return end
+	panelOpen = true
+	panelScale.Scale = userScale * 0.85
+	panelWindow.GroupTransparency = 1
+	panelWindow.Visible = true
+	tw(panelScale, 0.35, { Scale = userScale }, ES.Back, ED.Out)
+	tw(panelWindow, 0.3, { GroupTransparency = panelBaseT }, ES.Quad, ED.Out)
+	updateCursorState()
+end
+
+local function closePanel()
+	if not panelOpen then return end
+	panelOpen = false
+	if settingsPopup then
+		settingsPopup.Visible = false
+	end
+	updateCursorState()
+	tw(panelScale, 0.22, { Scale = userScale * 0.9 }, ES.Quad, ED.In)
+	local t = tw(panelWindow, 0.22, { GroupTransparency = 1 }, ES.Quad, ED.In)
+	t.Completed:Connect(function()
+		if not panelOpen then
+			panelWindow.Visible = false
+		end
+	end)
+end
+
+closeBtn.MouseButton1Click:Connect(closePanel)
+
+----------------------------------------------------
+-- ONGLETS
+----------------------------------------------------
+local tabs = {
+	{ name = "Écran", icon = "🖥️" },
+	{ name = "Potato", icon = "🥔" },
+	{ name = "Crosshair", icon = "🎯" },
+	{ name = "Shaders", icon = "🎨" },
+	{ name = "Infos", icon = "📁" },
+}
+local pages, tabButtons = {}, {}
+local currentTab = 1
+
+local function refreshTabs()
+	for j = 1, #tabs do
+		local sel = (j == currentTab)
+		tabButtons[j].BackgroundColor3 = sel and accentColor or WHITE
+		tabButtons[j].TextColor3 = sel and WHITE or Color3.fromRGB(60, 70, 85)
+	end
+end
+W.refreshTabs = refreshTabs
+
+local function selectTab(i)
+	currentTab = i
+	for j = 1, #tabs do
+		pages[j].Visible = (j == i)
+	end
+	refreshTabs()
+	pages[i].Position = UDim2.new(0, 0, 0, 18)
+	tw(pages[i], 0.25, { Position = UDim2.new(0, 0, 0, 0) }, ES.Quad, ED.Out)
+end
+
+for i, tabData in ipairs(tabs) do
+	local btn = new("TextButton", {
+		Size = UDim2.new(1, -10, 0, 42),
+		Position = UDim2.new(0, 5, 0, 10 + (i - 1) * 48),
+		BackgroundColor3 = WHITE,
+		Text = tabData.icon .. " " .. tabData.name,
+		TextSize = 13,
+		Font = EF.GothamMedium,
+	}, sideBar)
+	corner(btn, 8)
+	hover(btn)
+	tabButtons[i] = btn
+	pages[i] = makePage(contentArea)
+	pages[i].Name = "Page_" .. tabData.name
+	pages[i].Visible = (i == 1)
+	btn.MouseButton1Click:Connect(function()
+		selectTab(i)
+	end)
+end
+refreshTabs()
+
+----------------------------------------------------
+-- ONGLET 1 : ÉCRAN
+----------------------------------------------------
+do
+	local p = pages[1]
+	makeHeading(p, "🖥️ Configuration de l'Écran")
+
+	makeLabel(p, "Préréglages de ratio (le vrai stretch n’est pas exposé par Roblox) :")
+	local presets = {
+		{ "Par défaut (16:9)", 1 },
+		{ "4:3 Stretch (0.67)", 0.67 },
+		{ "16:10 Stretch (0.80)", 0.80 },
+		{ "1:1 Square (0.50)", 0.50 },
+		{ "5:4 Stretch (0.75)", 0.75 },
+		{ "Ultra Stretch (0.40)", 0.40 },
+	}
+	for i = 1, #presets, 2 do
+		local defs = {}
+		for k = i, math.min(i + 1, #presets) do
+			local pr = presets[k]
+			table.insert(defs, { pr[1], function()
+				applyResolution(pr[2])
+				toast("Préréglage mémorisé : " .. pr[1] .. " (ratio réel inchangé)")
+			end })
+		end
+		makeRow(p, defs)
+	end
+
+	makeLabel(p, "Personnaliser votre résolution (ex: 0.67) :")
+	local row = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 32), BackgroundTransparency = 1, LayoutOrder = ord(p),
+	}, p)
+	local box = new("TextBox", {
+		Size = UDim2.new(1, -96, 1, 0), BackgroundColor3 = WHITE, Text = "0.67",
+		TextColor3 = TXT, TextSize = 13, Font = EF.GothamMedium, ClearTextOnFocus = false,
+	}, row)
+	corner(box, 6)
+	new("UIStroke", { Color = Color3.fromRGB(210, 215, 225), Thickness = 1 }, box)
+	local ab = new("TextButton", {
+		Size = UDim2.new(0, 90, 1, 0), Position = UDim2.new(1, -90, 0, 0),
+		Text = "Appliquer", TextColor3 = WHITE, TextSize = 12, Font = EF.GothamBold,
+	}, row)
+	accent(ab, "BackgroundColor3")
+	corner(ab, 6)
+	hover(ab)
+	ab.MouseButton1Click:Connect(function()
+		local val = tonumber(box.Text)
+		if val and val >= 0.1 and val <= 1 then
+			applyResolution(val)
+			toast("Valeur mémorisée : " .. val .. " (ratio réel inchangé)")
+		else
+			toast("Valeur invalide : utilise une valeur entre 0.1 et 1")
+		end
+	end)
+
+	local lightingBackup = nil
+	W.fb = makeToggle(p, "🔆 Fullbright", false, function(on)
+		if on then
+			lightingBackup = lightingBackup or {
+				Brightness = lighting.Brightness, Ambient = lighting.Ambient,
+				OutdoorAmbient = lighting.OutdoorAmbient, FogStart = lighting.FogStart,
+				FogEnd = lighting.FogEnd, GlobalShadows = lighting.GlobalShadows,
+				ClockTime = lighting.ClockTime,
+			}
+			lighting.Brightness = 3
+			lighting.Ambient = Color3.fromRGB(178, 178, 178)
+			lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+			lighting.FogStart = 99999
+			lighting.FogEnd = 100000
+			lighting.GlobalShadows = false
+			lighting.ClockTime = 14
+		elseif lightingBackup then
+			for k, v in pairs(lightingBackup) do
+				lighting[k] = v
+			end
+			lightingBackup = nil
+		end
+	end)
+
+	makeLabel(p, "🎨 Lumière & couleurs", 13, true, TXT)
+	local cc = lighting:FindFirstChild("PanelModCC") or new("ColorCorrectionEffect", { Name = "PanelModCC" }, lighting)
+	local clockDefault = lighting.ClockTime
+
+	W.clock = makeSlider(p, "🕒 Heure du jeu", 0, 24, clockDefault, 0.25, function(v)
+		lighting.ClockTime = v
+	end, function(v)
+		return string.format("%02d:%02d", math.floor(v) % 24, math.floor((v % 1) * 60))
+	end)
+	W.sat = makeSlider(p, "Saturation", -1, 3, 0, 0.05, function(v) cc.Saturation = v end,
+		function(v) return string.format("%.2f", v) end)
+	W.con = makeSlider(p, "Contraste", -1, 1, 0, 0.05, function(v) cc.Contrast = v end,
+		function(v) return string.format("%.2f", v) end)
+	W.bri = makeSlider(p, "Luminosité (filtre)", -0.5, 0.5, 0, 0.05, function(v) cc.Brightness = v end,
+		function(v) return string.format("%.2f", v) end)
+
+	local effBackup = {}
+	W.fx = makeToggle(p, "✨ Désactiver effets (flou/bloom/rayons)", false, function(off)
+		local function scan(container)
+			for _, e in ipairs(container:GetChildren()) do
+				if e:IsA("PostEffect") and not string.find(e.Name, "^PanelMod") then
+					if off then
+						if effBackup[e] == nil then effBackup[e] = e.Enabled end
+						e.Enabled = false
+					end
+				end
+			end
+		end
+		if off then
+			scan(lighting)
+			if Camera then scan(Camera) end
+		else
+			for e, v in pairs(effBackup) do
+				if e.Parent then e.Enabled = v end
+			end
+			effBackup = {}
+		end
+	end)
+
+	local fogBackup = nil
+	W.noFog = makeToggle(p, "🌫️ Supprimer le brouillard", false, function(on)
+		local atm = lighting:FindFirstChildOfClass("Atmosphere")
+		if on then
+			fogBackup = fogBackup or {
+				FogStart = lighting.FogStart, FogEnd = lighting.FogEnd,
+				Density = atm and atm.Density or nil,
+			}
+			lighting.FogStart = 99999
+			lighting.FogEnd = 100000
+			if atm then atm.Density = 0 end
+		elseif fogBackup then
+			lighting.FogStart = fogBackup.FogStart
+			lighting.FogEnd = fogBackup.FogEnd
+			if atm and fogBackup.Density then atm.Density = fogBackup.Density end
+			fogBackup = nil
+		end
+	end)
+
+	makeLabel(p, "👥 Champ de vision (FOV)", 13, true, TXT)
+	local fovValue = 70
+	local fovMode = "Third"
+	local fovConnection = nil
+	local fovBindName = "PanelModFovForce"
+
+	local function applyFovNow()
+		local cam = workspace.CurrentCamera
+		if cam then
+			pcall(function()
+				cam.FieldOfView = fovValue -- le moteur Roblox bride entre 1 et 120
+			end)
+		end
+	end
+	local function stopFovForce()
+		if fovConnection then
+			fovConnection:Disconnect()
+			fovConnection = nil
+		end
+		pcall(function()
+			RunService:UnbindFromRenderStep(fovBindName)
+		end)
+	end
+
+	W.fov = makeSlider(p, "👥 FOV", 1, 120, 70, 1, function(v)
+		fovValue = v
+		if fovMode ~= "Arsenal" then
+			applyFovNow()
+		end
+	end)
+
+	local fovIds = { "Third", "First", "Arsenal" }
+	local fovBtns
+	local function setFovMode(mode)
+		fovMode = mode
+		stopFovForce()
+		if mode == "First" then
+			player.CameraMode = Enum.CameraMode.LockFirstPerson
+			applyFovNow()
+		elseif mode == "Arsenal" then
+			player.CameraMode = Enum.CameraMode.Classic
+			RunService:BindToRenderStep(fovBindName, Enum.RenderPriority.Camera.Value + 10, applyFovNow)
+			fovConnection = RunService.RenderStepped:Connect(applyFovNow)
+		else
+			player.CameraMode = Enum.CameraMode.Classic
+			applyFovNow()
+		end
+		if fovBtns then
+			for i, b in ipairs(fovBtns) do
+				local sel = (fovIds[i] == mode)
+				b.BackgroundColor3 = sel and accentColor or LIGHT
+				b.TextColor3 = sel and WHITE or TXT
+			end
+		end
+	end
+
+	fovBtns = makeRow(p, {
+		{ "3ème pers.", function() setFovMode("Third") end },
+		{ "1ère pers.", function() setFovMode("First") end },
+		{ "Arsenal", function() setFovMode("Arsenal") end },
+	})
+	setFovMode("Third")
+
+	makeButton(p, "↺ Réinitialiser l'écran", function()
+		W.resetScreen()
+		toast("Écran réinitialisé")
+	end, "accent")
+
+	function W.resetScreen()
+		applyResolution(1)
+		W.fb.set(false)
+		W.noFog.set(false)
+		W.fx.set(false)
+		W.sat.set(0)
+		W.con.set(0)
+		W.bri.set(0)
+		W.clock.set(clockDefault, true)
+		W.fov.set(70)
+		setFovMode("Third")
+	end
+end
+
+----------------------------------------------------
+-- ONGLET 2 : POTATO
+----------------------------------------------------
+do
+	local p = pages[2]
+	makeHeading(p, "🥔 Potato")
+
+	local potatoEnabled = false
+	local potatoLevel = 100
+	local originalState = {}
+	local potatoToken = 0
+
+	local function applyPotatoGraphics()
+		if not potatoEnabled then return end
+		potatoToken += 1
+		local my = potatoToken
+		local factor = potatoLevel / 100
+		local count = 0
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if my ~= potatoToken or not potatoEnabled then return end
+			local model = obj:FindFirstAncestorOfClass("Model")
+			if not model or not Players:GetPlayerFromCharacter(model) then
+				if obj:IsA("BasePart") then
+					if not originalState[obj] then
+						originalState[obj] = { material = obj.Material }
+					end
+					if factor >= 0.8 then
+						obj.Material = Enum.Material.SmoothPlastic
+					elseif factor >= 0.4 then
+						obj.Material = Enum.Material.Plastic
+					else
+						obj.Material = originalState[obj].material
+					end
+				elseif obj:IsA("Decal") or obj:IsA("Texture") then
+					if not originalState[obj] then
+						originalState[obj] = { transparency = obj.Transparency }
+					end
+					local t0 = originalState[obj].transparency
+					obj.Transparency = math.clamp(t0 + (1 - t0) * factor, 0, 1)
+				end
+			end
+			count += 1
+			if count % 300 == 0 then
+				task.wait()
+			end
+		end
+	end
+
+	local function restoreOriginalGraphics()
+		potatoToken += 1
+		for obj, state in pairs(originalState) do
+			if obj and obj.Parent then
+				if state.material and obj:IsA("BasePart") then
+					obj.Material = state.material
+				end
+				if state.transparency and (obj:IsA("Decal") or obj:IsA("Texture")) then
+					obj.Transparency = state.transparency
+				end
+			end
+		end
+		originalState = {}
+	end
+
+	W.potatoToggle = makeToggle(p, "🥔 Mode Potato", false, function(on)
+		potatoEnabled = on
+		if on then
+			task.spawn(applyPotatoGraphics)
+		else
+			restoreOriginalGraphics()
+		end
+	end)
+
+	local pending = false
+	W.potatoSlider = makeSlider(p, "Niveau Potato (réduction de texture)", 0, 100, 100, 1, function(v)
+		potatoLevel = v
+		if potatoEnabled and not pending then
+			pending = true
+			task.delay(0.15, function()
+				pending = false
+				task.spawn(applyPotatoGraphics)
+			end)
+		end
+	end, function(v) return v .. "%" end)
+
+	makeLabel(p, "• 0% = textures originales (qualité max)\n• 100% = zéro texture / lisse (FPS max)", 11, false, Color3.fromRGB(120, 130, 145), 32)
+
+	makeLabel(p, "⚡ Boosters FPS supplémentaires", 13, true, TXT)
+
+	local fxBackup = {}
+	local fxClasses = { ParticleEmitter = true, Trail = true, Beam = true, Fire = true, Smoke = true, Sparkles = true }
+	W.partT = makeToggle(p, "💨 Désactiver particules / trails", false, function(off)
+		if off then
+			for _, o in ipairs(workspace:GetDescendants()) do
+				if fxClasses[o.ClassName] then
+					if fxBackup[o] == nil then fxBackup[o] = o.Enabled end
+					o.Enabled = false
+				end
+			end
+		else
+			for o, v in pairs(fxBackup) do
+				if o.Parent then o.Enabled = v end
+			end
+			fxBackup = {}
+		end
+	end)
+
+	local shadowBackup = nil
+	W.shadT = makeToggle(p, "🌑 Désactiver les ombres", false, function(off)
+		if off then
+			if shadowBackup == nil then shadowBackup = lighting.GlobalShadows end
+			lighting.GlobalShadows = false
+		elseif shadowBackup ~= nil then
+			lighting.GlobalShadows = shadowBackup
+			shadowBackup = nil
+		end
+	end)
+
+	local ugs
+	pcall(function() ugs = UserSettings():GetService("UserGameSettings") end)
+	local qualityBackup = nil
+	W.qualT = makeToggle(p, "📉 Qualité graphique minimale", false, function(on)
+		pcall(function()
+			if on then
+				qualityBackup = qualityBackup or ugs.SavedQualityLevel
+				ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+			elseif qualityBackup then
+				ugs.SavedQualityLevel = qualityBackup
+				qualityBackup = nil
+			end
+		end)
+	end)
+
+	local terrain = workspace:FindFirstChildOfClass("Terrain")
+	local waterBackup = nil
+	W.waterT = makeToggle(p, "🌊 Eau lisse (sans vagues)", false, function(on)
+		if not terrain then return end
+		if on then
+			waterBackup = waterBackup or {
+				WaterWaveSize = terrain.WaterWaveSize, WaterWaveSpeed = terrain.WaterWaveSpeed,
+				WaterReflectance = terrain.WaterReflectance,
+			}
+			terrain.WaterWaveSize = 0
+			terrain.WaterWaveSpeed = 0
+			terrain.WaterReflectance = 0
+		elseif waterBackup then
+			for k, v in pairs(waterBackup) do terrain[k] = v end
+			waterBackup = nil
+		end
+	end)
+
+	makeButton(p, "↺ Tout restaurer", function()
+		W.resetPotato()
+		toast("Graphismes restaurés")
+	end, "accent")
+
+	function W.resetPotato()
+		W.potatoToggle.set(false)
+		W.partT.set(false)
+		W.shadT.set(false)
+		W.qualT.set(false)
+		W.waterT.set(false)
+		W.potatoSlider.set(100, true)
+		potatoLevel = 100
+	end
+end
+
+----------------------------------------------------
+-- ONGLET 3 : CROSSHAIR
+----------------------------------------------------
+do
+	local p = pages[3]
+	makeHeading(p, "🎯 Crosshair")
+
+	local modeBtn
+	W.crossToggle = makeToggle(p, "Crosshair", false, function(on)
+		C.enabled = on
+		updateCursorState()
+	end)
+
+	local modeNames = { Center = "Écran", Mouse = "Curseur", Both = "Les deux" }
+	modeBtn = makeButton(p, "Position : Écran", function()
+		if C.mode == "Center" then
+			C.mode = "Mouse"
+		elseif C.mode == "Mouse" then
+			C.mode = "Both"
+		else
+			C.mode = "Center"
+		end
+		modeBtn.Text = "Position : " .. modeNames[C.mode]
+		if not C.enabled then
+			W.crossToggle.set(true)
+		end
+		updateCursorState()
+	end, "accent")
+
+	local shapeBtn
+	shapeBtn = makeButton(p, "Forme : " .. shapeNames[1], function()
+		C.shape = (C.shape % #shapesList) + 1
+		shapeBtn.Text = "Forme : " .. shapeNames[C.shape]
+	end)
+
+	W.rgbT = makeToggle(p, "🌈 Mode RGB", false, function(on)
+		C.rgb = on
+	end)
+
+	W.sizeS = makeSlider(p, "Taille du crosshair", 10, 50, 18, 1, function(v) C.size = v end)
+	W.opS = makeSlider(p, "Opacité", 10, 100, 100, 5, function(v) C.opacity = v end, function(v) return v .. "%" end)
+	W.outT = makeToggle(p, "Contour noir", false, function(on) C.outline = on end)
+
+	makeLabel(p, "Choisir une couleur :")
+	makeColorGrid(p, {
+		Color3.fromRGB(255, 255, 255), Color3.fromRGB(0, 255, 128),
+		Color3.fromRGB(255, 60, 60), Color3.fromRGB(60, 130, 255),
+		Color3.fromRGB(255, 220, 50), Color3.fromRGB(200, 80, 255),
+		Color3.fromRGB(255, 100, 200), Color3.fromRGB(0, 230, 230),
+	}, function(col)
+		W.rgbT.set(false)
+		C.color = col
+	end)
+
+	function W.resetCross()
+		W.crossToggle.set(false)
+		C.mode = "Center"
+		modeBtn.Text = "Position : Écran"
+		C.shape = 1
+		shapeBtn.Text = "Forme : " .. shapeNames[1]
+		W.rgbT.set(false)
+		W.sizeS.set(18)
+		W.opS.set(100)
+		W.outT.set(false)
+		C.color = Color3.fromRGB(0, 255, 128)
+	end
+end
+
+----------------------------------------------------
+-- ONGLET 4 : SHADERS (5 shaders)
+----------------------------------------------------
+do
+	local p = pages[4]
+	makeHeading(p, "🎨 Shaders")
+	makeLabel(p, "Choisis un shader (un seul à la fois, clique à nouveau pour l'éteindre) :", 12, false, SUB, 34)
+
+	local function mk(class, name, props)
+		props.Name = "PanelModShader_" .. name
+		props.Enabled = false
+		local old = lighting:FindFirstChild(props.Name)
+		if old then old:Destroy() end
+		return new(class, props, lighting)
+	end
+	local sCC = mk("ColorCorrectionEffect", "CC", {})
+	local sBloom = mk("BloomEffect", "Bloom", { Intensity = 0, Size = 24, Threshold = 2 })
+	local sBlur = mk("BlurEffect", "Blur", { Size = 0 })
+	local sRays = mk("SunRaysEffect", "Rays", { Intensity = 0, Spread = 1 })
+	local sDof = mk("DepthOfFieldEffect", "DoF", {
+		FarIntensity = 0, NearIntensity = 0, FocusDistance = 50, InFocusRadius = 50,
+	})
+
+	local function lerp(a, b, t) return a + (b - a) * t end
+
+	local function neutral()
+		sCC.Enabled = false
+		sCC.Saturation = 0
+		sCC.Contrast = 0
+		sCC.Brightness = 0
+		sCC.TintColor = Color3.new(1, 1, 1)
+		sBloom.Enabled = false
+		sBloom.Intensity = 0
+		sBloom.Size = 24
+		sBloom.Threshold = 2
+		sBlur.Enabled = false
+		sBlur.Size = 0
+		sRays.Enabled = false
+		sRays.Intensity = 0
+		sDof.Enabled = false
+		sDof.FarIntensity = 0
+	end
+	neutral()
+
+	local SHADERS = {
+		{ id = "Fluo", name = "🌈 Fluo",
+		  desc = "Couleurs ultra vives, halo néon et teinte qui change doucement.",
+		  setup = function(k)
+			sCC.Enabled = true
+			sCC.Saturation = lerp(0, 1.5, k)
+			sCC.Contrast = lerp(0, 0.2, k)
+			sBloom.Enabled = true
+			sBloom.Intensity = lerp(0, 1.3, k)
+			sBloom.Size = lerp(24, 48, k)
+			sBloom.Threshold = 0.8
+			sRays.Enabled = true
+			sRays.Intensity = lerp(0, 0.2, k)
+			sRays.Spread = 0.8
+		  end },
+		{ id = "Mouvement", name = "💨 Mouvement",
+		  desc = "Flou de mouvement : plus tu bouges ou tournes vite la caméra, plus l'image se floute.",
+		  setup = function(k)
+			sBlur.Enabled = true
+			sBlur.Size = 0
+			sCC.Enabled = true
+			sCC.Saturation = lerp(0, 0.12, k)
+			sCC.Contrast = lerp(0, 0.06, k)
+		  end },
+		{ id = "Cinema", name = "🎬 Cinéma",
+		  desc = "Look film : contraste marqué, tons chauds, lueur douce et rayons légers.",
+		  setup = function(k)
+			sCC.Enabled = true
+			sCC.Contrast = lerp(0, 0.22, k)
+			sCC.Saturation = lerp(0, -0.12, k)
+			sCC.Brightness = lerp(0, -0.03, k)
+			sCC.TintColor = Color3.new(1, 1, 1):Lerp(Color3.fromRGB(255, 236, 214), k)
+			sBloom.Enabled = true
+			sBloom.Intensity = lerp(0, 0.45, k)
+			sBloom.Size = 24
+			sBloom.Threshold = 1
+			sRays.Enabled = true
+			sRays.Intensity = lerp(0, 0.1, k)
+		  end },
+		{ id = "NB", name = "🖤 Noir & Blanc",
+		  desc = "Image en noir et blanc très contrastée, ambiance rétro.",
+		  setup = function(k)
+			sCC.Enabled = true
+			sCC.Saturation = lerp(0, -1, k)
+			sCC.Contrast = lerp(0, 0.28, k)
+			sCC.Brightness = lerp(0, 0.02, k)
+		  end },
+		{ id = "Reve", name = "🌅 Rêve",
+		  desc = "Ambiance onirique : gros halo lumineux pulsant, flou lointain, teinte rose.",
+		  setup = function(k)
+			sCC.Enabled = true
+			sCC.Saturation = lerp(0, 0.3, k)
+			sCC.Brightness = lerp(0, 0.04, k)
+			sCC.TintColor = Color3.new(1, 1, 1):Lerp(Color3.fromRGB(255, 226, 246), k)
+			sBloom.Enabled = true
+			sBloom.Intensity = lerp(0, 1.5, k)
+			sBloom.Size = lerp(24, 56, k)
+			sBloom.Threshold = 0.6
+			sDof.Enabled = true
+			sDof.FarIntensity = lerp(0, 0.3, k)
+			sDof.FocusDistance = 30
+			sDof.InFocusRadius = 40
+		  end },
+	}
+	local byId = {}
+	for _, s in ipairs(SHADERS) do byId[s.id] = s end
+
+	local activeId = nil
+	local intensity = 70
+	local animateOn = true
+	local hue = 0
+	local blurSize = 0
+	local lastLook, lastPos = nil, nil
+	local shaderBtns = {}
+	local descLabel
+
+	local function refreshShaders()
+		for i, s in ipairs(SHADERS) do
+			local sel = (s.id == activeId)
+			shaderBtns[i].BackgroundColor3 = sel and accentColor or LIGHT
+			shaderBtns[i].TextColor3 = sel and WHITE or TXT
+		end
+		if descLabel then
+			descLabel.Text = activeId and byId[activeId].desc or "Aucun shader actif."
+		end
+	end
+	W.refreshShaders = refreshShaders
+
+	local function applyShader()
+		neutral()
+		lastLook, lastPos = nil, nil
+		blurSize = 0
+		if activeId then
+			byId[activeId].setup(intensity / 100)
+		end
+		refreshShaders()
+	end
+
+	for _, s in ipairs(SHADERS) do
+		local b = makeButton(p, s.name, function()
+			if activeId == s.id then
+				activeId = nil
+				toast("Shader désactivé")
+			else
+				activeId = s.id
+				toast("Shader : " .. s.name)
+			end
+			applyShader()
+		end, nil, 36)
+		table.insert(shaderBtns, b)
+	end
+
+	makeButton(p, "⛔ Aucun shader", function()
+		activeId = nil
+		applyShader()
+		toast("Shaders désactivés")
+	end)
+
+	descLabel = makeLabel(p, "Aucun shader actif.", 11, false, Color3.fromRGB(120, 130, 145), 36)
+
+	W.shaderInt = makeSlider(p, "Intensité du shader", 0, 100, 70, 5, function(v)
+		intensity = v
+		applyShader()
+	end, function(v) return v .. "%" end)
+
+	W.shaderAnim = makeToggle(p, "🎞️ Animation du shader", true, function(on)
+		animateOn = on
+		applyShader()
+	end)
+
+	-- Animations dynamiques des shaders
+	RunService.RenderStepped:Connect(function(dt)
+		if not activeId then return end
+		local k = intensity / 100
+		if activeId == "Fluo" and animateOn then
+			hue = (hue + dt * 0.08) % 1
+			sCC.TintColor = Color3.fromHSV(hue, 0.22 * k, 1)
+		elseif activeId == "Reve" and animateOn then
+			sBloom.Intensity = lerp(0, 1.5, k) + math.sin(os.clock() * 1.5) * 0.25 * k
+		elseif activeId == "Mouvement" then
+			local cam = workspace.CurrentCamera
+			if cam and dt > 0 then
+				local look = cam.CFrame.LookVector
+				local pos = cam.CFrame.Position
+				local target = 0
+				if lastLook then
+					local ang = math.acos(math.clamp(look:Dot(lastLook), -1, 1))
+					local angSpeed = ang / dt
+					local linSpeed = (pos - lastPos).Magnitude / dt
+					target = math.clamp(angSpeed * 2.5 + linSpeed * 0.05, 0, 24) * k
+				end
+				lastLook, lastPos = look, pos
+				blurSize = blurSize + (target - blurSize) * math.clamp(dt * 10, 0, 1)
+				sBlur.Size = blurSize
+			end
+		end
+	end)
+
+	function W.resetShaders()
+		activeId = nil
+		intensity = 70
+		W.shaderInt.set(70, true)
+		W.shaderAnim.set(true, true)
+		animateOn = true
+		applyShader()
+	end
+
+	refreshShaders()
+end
+
+----------------------------------------------------
+-- ONGLET 5 : INFOS
+----------------------------------------------------
+do
+	local p = pages[5]
+	makeHeading(p, "📁 Infos & Outils")
+
+	W.fpsT = makeToggle(p, "📊 Afficher FPS / Ping", false, function(on)
+		fpsLabel.Visible = on
+	end)
+
+	local log = makeLabel(p,
+		"🆕 Version " .. VERSION .. " (105.15)\n" ..
+		"• Nouvel onglet Shaders : Fluo, Mouvement, Cinéma, Noir & Blanc, Rêve\n" ..
+		"• Animation de mise à jour refaite\n" ..
+		"• Paramètres enrichis (⚙️)\n" ..
+		"• Panel et fenêtres avec fondu et zoom\n" ..
+		"• Écran : heure, saturation, contraste, sans effets, sans brouillard\n" ..
+		"• Potato : particules, ombres, qualité min, eau lisse\n" ..
+		"• Crosshair : 5 formes, opacité, contour",
+		12, false, SUB, 10)
+	log.AutomaticSize = Enum.AutomaticSize.Y
+	log.Size = UDim2.new(1, 0, 0, 10)
+
+	makeButton(p, "↺ TOUT réinitialiser", function()
+		W.resetScreen()
+		W.resetPotato()
+		W.resetCross()
+		W.resetShaders()
+		W.fpsT.set(false)
+		toast("Tout a été réinitialisé")
+	end, "red")
+
+	makeButton(p, "Fermer le panel", closePanel, "accent")
+end
+
+----------------------------------------------------
+-- PARAMÈTRES (page complète par-dessus le panel)
+----------------------------------------------------
+local currentToggleKey = Enum.KeyCode.RightControl
+local listeningForKey = false
+
+settingsPopup = new("Frame", {
+	Name = "SettingsOverlay",
+	Size = UDim2.new(1, 0, 1, -40),
+	Position = UDim2.new(0, 0, 0, 40),
+	BackgroundColor3 = Color3.fromRGB(240, 243, 248),
+	BorderSizePixel = 0,
+	Visible = false,
+	Active = true,
+	ZIndex = 100,
+}, panelWindow)
+
+do
+	local p = makePage(settingsPopup)
+	makeHeading(p, "⚙️ Paramètres du Panel")
+
+	makeLabel(p, "⌨️ Touche pour ouvrir / fermer le panel :")
+	local keybindButton
+	keybindButton = makeButton(p, "Touche : RightControl", function()
+		listeningForKey = true
+		keybindButton.Text = "Appuyez sur une touche..."
+		keybindButton.BackgroundColor3 = Color3.fromRGB(230, 126, 34)
+	end, "accent")
+	W.keybindButton = keybindButton
+
+	makeLabel(p, "🎞️ Animations", 13, true, TXT)
+	W.animT = makeToggle(p, "Animations", true, function(on)
+		animationsOn = on
+	end)
+	W.animSpeedS = makeSlider(p, "Vitesse des animations", 50, 200, 100, 10, function(v)
+		animSpeed = v / 100
+	end, function(v) return v .. "%" end)
+
+	makeLabel(p, "🪟 Apparence du panel", 13, true, TXT)
+	W.scaleS = makeSlider(p, "Taille du panel", 70, 130, 100, 5, function(v)
+		userScale = v / 100
+		if panelOpen then
+			panelScale.Scale = userScale
+		end
+	end, function(v) return v .. "%" end)
+
+	W.opacityS = makeSlider(p, "Opacité du panel", 20, 100, 100, 5, function(v)
+		panelBaseT = 1 - v / 100
+		if panelOpen then
+			panelWindow.GroupTransparency = panelBaseT
+		end
+	end, function(v) return v .. "%" end)
+
+	makeLabel(p, "🔔 Notifications", 13, true, TXT)
+	W.notifT = makeToggle(p, "Notifications", true, function(on)
+		notifOn = on
+	end)
+
+	makeLabel(p, "🎨 Couleur d'accent", 13, true, TXT)
+	makeColorGrid(p, {
+		Color3.fromRGB(53, 120, 229), Color3.fromRGB(46, 204, 113),
+		Color3.fromRGB(231, 76, 60), Color3.fromRGB(155, 89, 182),
+		Color3.fromRGB(241, 196, 15), Color3.fromRGB(26, 188, 156),
+		Color3.fromRGB(230, 126, 34), Color3.fromRGB(45, 55, 72),
+	}, function(col)
+		setAccent(col)
+	end)
+
+	makeLabel(p, "📐 Position des fenêtres", 13, true, TXT)
+	makeRow(p, {
+		{ "Recentrer panel", function()
+			panelWindow.Position = UDim2.new(0.5, 0, 0.5, 0)
+			toast("Panel recentré")
+		end },
+		{ "Recentrer accueil", function()
+			updateWindow.Position = UDim2.new(0.5, 0, 0.5, 0)
+			toast("Fenêtre d'accueil recentrée")
+		end },
+	}, 34)
+
+	makeButton(p, "↺ Réinitialiser les paramètres", function()
+		currentToggleKey = Enum.KeyCode.RightControl
+		listeningForKey = false
+		W.keybindButton.Text = "Touche : RightControl"
+		W.animT.set(true)
+		W.animSpeedS.set(100)
+		W.scaleS.set(100)
+		W.opacityS.set(100)
+		W.notifT.set(true)
+		setAccent(DEFAULT_ACCENT)
+		panelWindow.Position = UDim2.new(0.5, 0, 0.5, 0)
+		updateWindow.Position = UDim2.new(0.5, 0, 0.5, 0)
+		toast("Paramètres réinitialisés")
+	end, "red")
+
+	makeButton(p, "Fermer les paramètres", function()
+		settingsPopup.Visible = false
+	end, "accent")
+end
+
+-- La page des paramètres doit rester au-dessus du fond de son overlay.
+for _, descendant in ipairs(settingsPopup:GetDescendants()) do
+	if descendant:IsA("GuiObject") then
+		descendant.ZIndex = 101
+	end
+end
+
+settingsBtn.MouseButton1Click:Connect(function()
+	if not panelOpen then return end
+	settingsPopup.Visible = not settingsPopup.Visible
+end)
+
+-- Raccourci clavier du panel et capture de la nouvelle touche.
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if listeningForKey then
+		if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+		if input.KeyCode == Enum.KeyCode.Unknown then return end
+
+		if input.KeyCode == Enum.KeyCode.Escape then
+			listeningForKey = false
+			W.keybindButton.Text = "Touche : " .. currentToggleKey.Name
+			W.keybindButton.BackgroundColor3 = accentColor
+			return
+		end
+
+		currentToggleKey = input.KeyCode
+		listeningForKey = false
+		W.keybindButton.Text = "Touche : " .. currentToggleKey.Name
+		W.keybindButton.BackgroundColor3 = accentColor
+		toast("Raccourci modifié : " .. currentToggleKey.Name)
+		return
+	end
+
+	if gameProcessed or menuOpen then return end
+	if UserInputService:GetFocusedTextBox() then return end
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+	if input.KeyCode ~= currentToggleKey then return end
+
+	if not panelUnlocked then
+		toast("Clique d'abord sur la flèche pour initialiser le panel")
+		return
+	end
+
+	if panelOpen then
+		closePanel()
+	else
+		openPanel()
+	end
+end)
+
+-- Animation d'initialisation locale : elle ne télécharge aucun fichier externe.
+local function createConfetti()
+	local confettiColors = {
+		Color3.fromRGB(53, 120, 229), Color3.fromRGB(46, 204, 113),
+		Color3.fromRGB(255, 220, 70), Color3.fromRGB(230, 126, 34),
+		Color3.fromRGB(200, 80, 255),
+	}
+	for i = 1, 22 do
+		local piece = new("Frame", {
+			Name = "ConfettiPiece",
+			Size = UDim2.new(0, math.random(4, 8), 0, math.random(6, 12)),
+			Position = UDim2.new(math.random(5, 95) / 100, 0, 0, -10),
+			BackgroundColor3 = confettiColors[math.random(1, #confettiColors)],
+			BorderSizePixel = 0,
+			Rotation = math.random(0, 180),
+			ZIndex = 20,
+		}, updateWindow)
+		tw(piece, math.random(8, 16) / 10, {
+			Position = UDim2.new(piece.Position.X.Scale, math.random(-25, 25), 0, 340),
+			Rotation = math.random(-360, 360),
+			BackgroundTransparency = 1,
+		}, ES.Quad, ED.In)
+		task.delay(1.8, function()
+			if piece and piece.Parent then piece:Destroy() end
+		end)
+	end
+end
+
+iconButton.MouseButton1Click:Connect(function()
+	if isUpdating or panelUnlocked then return end
+	isUpdating = true
+	iconButton.Active = false
+	arrow.Text = "↻"
+	subtitleLabel.Text = "Initialisation du panel local..."
+	percentLabel.Text = "0%"
+	progressBar.Size = UDim2.new(0, 0, 1, 0)
+	setSteps(0)
+	tw(iconButton, 0.2, { BackgroundColor3 = Color3.fromRGB(44, 52, 74) })
+
+	task.spawn(function()
+		for i = 1, 100 do
+			local progress = i / 100
+			progressBar.Size = UDim2.new(progress, 0, 1, 0)
+			percentLabel.Text = tostring(i) .. "%"
+			setSteps(progress)
+
+			if progress < 0.2 then
+				subtitleLabel.Text = "Préparation..."
+			elseif progress < 0.5 then
+				subtitleLabel.Text = "Chargement de l'interface..."
+			elseif progress < 0.8 then
+				subtitleLabel.Text = "Activation des composants..."
+			else
+				subtitleLabel.Text = "Finalisation..."
+			end
+			task.wait(0.025)
+		end
+
+		setSteps(1)
+		percentLabel.Text = "100%"
+		subtitleLabel.Text = "Panel prêt — aucune mise à jour externe téléchargée."
+		arrow.Text = "✓"
+		panelUnlocked = true
+		createConfetti()
+		task.wait(0.65)
+
+		local fade = tw(updateWindow, 0.25, { GroupTransparency = 1 }, ES.Quad, ED.In)
+		fade.Completed:Wait()
+		updateWindow.Visible = false
+		isUpdating = false
+		openPanel()
+	end)
+end)
+
+-- Affichage d'accueil au lancement.
+updateWindow.Visible = true
+updateWindow.GroupTransparency = 1
+updateWindow.Position = UDim2.new(0.5, 0, 0.5, 24)
+updateScale.Scale = 0.9
+tw(updateScale, 0.35, { Scale = 1 }, ES.Back, ED.Out)
+tw(updateWindow, 0.35, { GroupTransparency = 0 }, ES.Quad, ED.Out)
