@@ -122,16 +122,97 @@ end
 -- SYSTÈME DE RÉSOLUTION (STRETCH)
 ----------------------------------------------------
 local currentStretchY = 1
-local stretchConnection = nil -- conservé pour compatibilité avec le reste du script
-local function applyResolution(ratioY)
-	-- Roblox ne permet pas à un LocalScript de changer le vrai ratio de rendu.
-	-- Éviter de multiplier Camera.CFrame par une matrice d'échelle à chaque frame :
-	-- cela déforme la transformation de la caméra au lieu de changer la résolution.
-	currentStretchY = math.clamp(tonumber(ratioY) or 1, 0.1, 1)
-	if stretchConnection then
-		stretchConnection:Disconnect()
-		stretchConnection = nil
+local stretchBound = false
+local stretchRestoreBindName = "PanelModStretchRestore"
+local stretchApplyBindName = "PanelModStretchApply"
+local lastStretchCamera = nil
+local lastStretchBaseCFrame = nil
+local lastStretchAppliedCFrame = nil
+
+local function restoreLastStretch()
+	local cam = workspace.CurrentCamera
+	if cam and cam == lastStretchCamera and lastStretchAppliedCFrame and lastStretchBaseCFrame then
+		if cam.CFrame == lastStretchAppliedCFrame then
+			cam.CFrame = lastStretchBaseCFrame
+		end
 	end
+	lastStretchCamera = nil
+	lastStretchBaseCFrame = nil
+	lastStretchAppliedCFrame = nil
+end
+
+local function stopStretch()
+	if stretchBound then
+		pcall(function()
+			RunService:UnbindFromRenderStep(stretchRestoreBindName)
+			RunService:UnbindFromRenderStep(stretchApplyBindName)
+		end)
+		stretchBound = false
+	end
+	restoreLastStretch()
+end
+
+local function applyResolution(ratioY)
+	currentStretchY = math.clamp(tonumber(ratioY) or 1, 0.1, 1)
+
+	-- Le mode par défaut retire la déformation et arrête les deux callbacks.
+	if currentStretchY >= 0.9999 then
+		stopStretch()
+		return
+	end
+
+	if stretchBound then return end
+
+	-- Évite un doublon si le script a été relancé.
+	pcall(function()
+		RunService:UnbindFromRenderStep(stretchRestoreBindName)
+		RunService:UnbindFromRenderStep(stretchApplyBindName)
+	end)
+
+	-- Retire la déformation de la frame précédente AVANT que la caméra Roblox
+	-- se mette à jour, afin de ne jamais multiplier le CFrame déformé en boucle.
+	RunService:BindToRenderStep(
+		stretchRestoreBindName,
+		Enum.RenderPriority.Camera.Value - 1,
+		function()
+			local cam = workspace.CurrentCamera
+			if cam and cam == lastStretchCamera and lastStretchAppliedCFrame and lastStretchBaseCFrame then
+				if cam.CFrame == lastStretchAppliedCFrame then
+					cam.CFrame = lastStretchBaseCFrame
+				end
+			end
+			lastStretchCamera = nil
+			lastStretchBaseCFrame = nil
+			lastStretchAppliedCFrame = nil
+		end
+	)
+
+	-- Applique le ratio après la caméra Roblox. La matrice correspond au
+	-- principe du script de base, mais sans accumulation d'une frame à l'autre.
+	RunService:BindToRenderStep(
+		stretchApplyBindName,
+		Enum.RenderPriority.Camera.Value + 1,
+		function()
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+
+			local baseCFrame = cam.CFrame
+			local stretchMatrix = CFrame.new(
+				0, 0, 0,
+				1, 0, 0,
+				0, currentStretchY, 0,
+				0, 0, 1
+			)
+			local appliedCFrame = baseCFrame * stretchMatrix
+
+			lastStretchCamera = cam
+			lastStretchBaseCFrame = baseCFrame
+			lastStretchAppliedCFrame = appliedCFrame
+			cam.CFrame = appliedCFrame
+		end
+	)
+
+	stretchBound = true
 end
 
 ----------------------------------------------------
@@ -868,7 +949,7 @@ do
 	local p = pages[1]
 	makeHeading(p, "🖥️ Configuration de l'Écran")
 
-	makeLabel(p, "Préréglages de ratio (le vrai stretch n’est pas exposé par Roblox) :")
+	makeLabel(p, "Préréglages du mode étiré :")
 	local presets = {
 		{ "Par défaut (16:9)", 1 },
 		{ "4:3 Stretch (0.67)", 0.67 },
@@ -883,7 +964,7 @@ do
 			local pr = presets[k]
 			table.insert(defs, { pr[1], function()
 				applyResolution(pr[2])
-				toast("Préréglage mémorisé : " .. pr[1] .. " (ratio réel inchangé)")
+				toast("Mode étiré appliqué : " .. pr[1])
 			end })
 		end
 		makeRow(p, defs)
@@ -910,7 +991,7 @@ do
 		local val = tonumber(box.Text)
 		if val and val >= 0.1 and val <= 1 then
 			applyResolution(val)
-			toast("Valeur mémorisée : " .. val .. " (ratio réel inchangé)")
+			toast("Stretch personnalisé appliqué : " .. tostring(val))
 		else
 			toast("Valeur invalide : utilise une valeur entre 0.1 et 1")
 		end
